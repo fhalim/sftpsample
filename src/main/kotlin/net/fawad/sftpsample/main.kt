@@ -6,6 +6,7 @@ import org.apache.camel.CamelContext
 import org.apache.camel.builder.RouteBuilder
 import org.apache.camel.impl.DefaultCamelContext
 import org.apache.log4j.ConsoleAppender
+import org.apache.log4j.Level
 import org.apache.log4j.LogManager
 import org.apache.log4j.PatternLayout
 import org.apache.sshd.server.SshServer
@@ -20,16 +21,25 @@ import java.io.Closeable
 import java.io.File
 import java.nio.charset.Charset
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.function.Function
 
 
 fun main(args: Array<String>) {
     LogManager.getRootLogger().addAppender(ConsoleAppender(PatternLayout()))
+    LogManager.getRootLogger().level = Level.INFO
 
     SshServer.setUpDefaultServer().use { sshd ->
+        val latch = CountDownLatch(1)
         sshd.initialize()
         sshd.start()
-        doCamelConsumption().toCloseable().use { _ ->
+        setupCamelContext(Function { x ->
+            println("Received file with contents: $x")
+            latch.countDown()
+            x
+        }).toCloseable().use { _ ->
             uploadFile("localhost", sshd.port)
+            latch.await()
         }
     }
 }
@@ -66,24 +76,26 @@ fun uploadFile(server: String, port: Int) {
     sftp.connect()
     if (sftp is ChannelSftp) {
         ByteArrayInputStream("Hello, world!".toByteArray(Charset.defaultCharset())).use { src ->
-            sftp.put(src, "/tmp/foo.txt")
+            try {
+                sftp.stat("build/upload")
+            } catch(e: Exception) {
+                sftp.mkdir("build/upload")
+            }
+            sftp.put(src, "build/upload/foo.txt")
         }
     }
 }
 
-private fun CamelContext.toCloseable() = Closeable {
-    fun close() = this.stop()
-}
+private fun CamelContext.toCloseable() = Closeable { this.stop() }
 
-private fun doCamelConsumption(): CamelContext {
-
+private fun setupCamelContext(callback: Function<String, String>): CamelContext {
     val ctx = DefaultCamelContext()
     ctx.addRoutes(object : RouteBuilder() {
         override fun configure() {
-            from("sftp://localhost:1222/tmp/foo.txt?username=bob&password=passwo111rd")
-                    .to("stream:out")
+            from("sftp://localhost:1222/build/upload?autoCreate=false&username=bob&password=password&knownHostsFile=known_hosts")
+                    .unmarshal().string("UTF-8")
+                    .bean(callback)
         }
-
     })
     ctx.start()
     return ctx
