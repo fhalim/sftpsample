@@ -2,6 +2,8 @@ package net.fawad.sftpsample
 
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
+import eu.rekawek.toxiproxy.ToxiproxyClient
+import eu.rekawek.toxiproxy.model.ToxicDirection
 import org.apache.camel.CamelContext
 import org.apache.camel.builder.RouteBuilder
 import org.apache.camel.impl.DefaultCamelContext
@@ -26,9 +28,12 @@ import java.util.function.Function
 
 
 fun main(args: Array<String>) {
+    val simulateLatency = true
+    val latencyMs = 30000L
     LogManager.getRootLogger().addAppender(ConsoleAppender(PatternLayout()))
     LogManager.getRootLogger().level = Level.INFO
     val logger = LogManager.getLogger("main")
+
     SshServer.setUpDefaultServer().use { sshd ->
         val latch = CountDownLatch(1)
         sshd.initialize()
@@ -38,7 +43,26 @@ fun main(args: Array<String>) {
             latch.countDown()
             x
         }).toCloseable().use { _ ->
-            uploadFile("localhost", sshd.port)
+            val proxyPort = sshd.port + 1
+            val toxiClient = ToxiproxyClient("localhost", 8474)
+            val proxy = toxiClient.createProxy("mocksftp", "localhost:${proxyPort}", "localhost:${sshd.port}")
+            val uploadToPort = if (simulateLatency) {
+                proxyPort
+            } else {
+                sshd.port
+            }
+            val onBeforeUpload = if (simulateLatency) {
+                ->
+                proxy.toxics().latency("slowuploads", ToxicDirection.UPSTREAM, latencyMs)
+                Unit
+            } else {
+                ->
+            }
+            try {
+                uploadFile("localhost", uploadToPort, onBeforeUpload)
+            }finally{
+                proxy.delete()
+            }
             latch.await()
         }
     }
@@ -66,7 +90,7 @@ private fun SshServer.initialize() {
     sshd.subsystemFactories = listOf(x)
 }
 
-fun uploadFile(server: String, port: Int) {
+fun uploadFile(server: String, port: Int, onBeforeUpload: () -> Unit) {
     val jsch = JSch()
     jsch.setKnownHosts("known_hosts")
     val session = jsch.getSession("bob", server, port)
@@ -75,29 +99,14 @@ fun uploadFile(server: String, port: Int) {
     val sftp = session.openChannel("sftp")
     sftp.connect()
     if (sftp is ChannelSftp) {
-        val uploadInputstream = object:ByteArrayInputStream("Hello, world!".toByteArray(Charset.defaultCharset())){
-            val pause = 0L
-            override fun read(): Int {
-                Thread.sleep(pause)
-                return super.read()
-            }
-
-            override fun read(p0: ByteArray?): Int {
-                Thread.sleep(pause)
-                return super.read(p0)
-            }
-
-            override fun read(p0: ByteArray?, p1: Int, p2: Int): Int {
-                Thread.sleep(pause)
-                return super.read(p0, p1, p2)
-            }
-        }
+        val uploadInputstream = ByteArrayInputStream("Hello, world!".toByteArray(Charset.defaultCharset()))
         uploadInputstream.use { src ->
             try {
                 sftp.stat("build/upload")
             } catch(e: Exception) {
                 sftp.mkdir("build/upload")
             }
+            onBeforeUpload()
             sftp.put(src, "build/upload/foo.txt")
         }
     }

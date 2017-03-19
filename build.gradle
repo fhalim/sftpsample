@@ -31,4 +31,5 @@ dependencies {
     compile "org.apache.camel:camel-ftp:$camel_version"
     compile "org.apache.camel:camel-stream:$camel_version"
     compile 'io.reactivex.rxjava2:rxjava:2.0.7'
+    compile 'eu.rekawek.toxiproxy:toxiproxy-java:2.1.1'
 }
