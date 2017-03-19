@@ -28,13 +28,13 @@ import java.util.function.Function
 fun main(args: Array<String>) {
     LogManager.getRootLogger().addAppender(ConsoleAppender(PatternLayout()))
     LogManager.getRootLogger().level = Level.INFO
-
+    val logger = LogManager.getLogger("main")
     SshServer.setUpDefaultServer().use { sshd ->
         val latch = CountDownLatch(1)
         sshd.initialize()
         sshd.start()
         setupCamelContext(Function { x ->
-            println("Received file with contents: $x")
+            logger.info("Received file with contents: $x")
             latch.countDown()
             x
         }).toCloseable().use { _ ->
@@ -75,7 +75,24 @@ fun uploadFile(server: String, port: Int) {
     val sftp = session.openChannel("sftp")
     sftp.connect()
     if (sftp is ChannelSftp) {
-        ByteArrayInputStream("Hello, world!".toByteArray(Charset.defaultCharset())).use { src ->
+        val uploadInputstream = object:ByteArrayInputStream("Hello, world!".toByteArray(Charset.defaultCharset())){
+            val pause = 0L
+            override fun read(): Int {
+                Thread.sleep(pause)
+                return super.read()
+            }
+
+            override fun read(p0: ByteArray?): Int {
+                Thread.sleep(pause)
+                return super.read(p0)
+            }
+
+            override fun read(p0: ByteArray?, p1: Int, p2: Int): Int {
+                Thread.sleep(pause)
+                return super.read(p0, p1, p2)
+            }
+        }
+        uploadInputstream.use { src ->
             try {
                 sftp.stat("build/upload")
             } catch(e: Exception) {
@@ -92,7 +109,7 @@ private fun setupCamelContext(callback: Function<String, String>): CamelContext 
     val ctx = DefaultCamelContext()
     ctx.addRoutes(object : RouteBuilder() {
         override fun configure() {
-            from("sftp://localhost:1222/build/upload?autoCreate=false&username=bob&password=password&knownHostsFile=known_hosts")
+            from("sftp://localhost:1222/build/upload?autoCreate=false&username=bob&password=password&knownHostsFile=known_hosts&move=.done&readLock=changed")
                     .unmarshal().string("UTF-8")
                     .bean(callback)
         }

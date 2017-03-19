@@ -30,4 +30,5 @@ dependencies {
     compile 'log4j:log4j:1.2.17'
     compile "org.apache.camel:camel-ftp:$camel_version"
     compile "org.apache.camel:camel-stream:$camel_version"
+    compile 'io.reactivex.rxjava2:rxjava:2.0.7'
 }
